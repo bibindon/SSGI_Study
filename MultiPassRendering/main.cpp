@@ -359,7 +359,7 @@ void RenderPass2()
     g_pEffect2->SetFloat("g_aoStepWorld", 4.0f);
     g_pEffect2->SetFloat("g_originPush", 0.05f);
     g_pEffect2->SetFloat("g_edgeZ", 0.006f);
-    g_pEffect2->SetFloat("g_ssgiDepthReject", 0.003f);
+    g_pEffect2->SetFloat("g_ssgiDepthReject", 0.001f);
     g_pEffect2->SetFloat("g_ssgiRadiusScale", 1.0f);
 
     g_pEffect2->SetTexture("texColor", g_pRenderTarget);
