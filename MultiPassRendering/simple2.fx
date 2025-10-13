@@ -409,6 +409,7 @@ technique TechniqueAO_BlurV
         PixelShader = compile ps_3_0 PS_BlurV();
     }
 }
+
 // ======== SSGI params ========
 float g_ssgiStrength = 0.5f; // 出力への寄与
 float g_ssgiDepthReject = 0.003f; // Z差が大きすぎるサンプルを捨てる
@@ -502,6 +503,206 @@ technique TechniqueSSGI
         CullMode = NONE;
         VertexShader = compile vs_3_0 VS_Fullscreen();
         PixelShader = compile ps_3_0 PS_SSGI();
+    }
+}
+
+// SSGI 間接光（RGB）だけを計算して返す共通関数
+float3 ComputeSSGIIndirect(float2 uv)
+{
+    float3 baseColor = tex2D(sampColor, uv).rgb;
+
+    Basis basis = BuildBasis(uv);
+    float3 normalV = basis.Nv;
+    float3 originV = basis.vOrigin + normalV * (g_originPush * g_aoStepWorld);
+    float refZ = basis.zRef;
+
+    float3 upV = (abs(normalV.z) < 0.999f) ? float3(0, 0, 1) : float3(0, 1, 0);
+    float3 tangentV = normalize(cross(upV, normalV));
+    float3 bitangentV = cross(normalV, tangentV);
+
+    float3 accumColor = 0.0f;
+    float accumWeight = 0.0f;
+
+    const int kSamplesSSGI = 64;
+
+    [unroll]
+    for (int k = 0; k < kSamplesSSGI; ++k)
+    {
+        float3 hemi = HemiDirFromIndex(k);
+        float3 dirV = normalize(tangentV * hemi.x + bitangentV * hemi.y + normalV * hemi.z);
+
+        float u = ((float) k + 0.5f) / (float) kSamplesSSGI;
+        float radius = g_aoStepWorld * g_ssgiRadiusScale * (u * u);
+
+        float3 sampleV = originV + dirV * radius;
+
+        float4 clip = mul(float4(sampleV, 1.0f), g_matProj);
+        if (clip.w <= 0.0f)
+        {
+            continue;
+        }
+        float2 suv = NdcToUv(clip);
+        if (suv.x < 0.0f || suv.x > 1.0f || suv.y < 0.0f || suv.y > 1.0f)
+        {
+            continue;
+        }
+
+        float zImg = tex2D(sampZ, suv).a;
+        float zCtr = tex2D(sampZ, uv).a;
+        float zExp = saturate((sampleV.z - g_fNear) / (g_fFar - g_fNear));
+
+        bool nearEdgeOK = (abs(zImg - refZ) <= g_edgeZ) || (abs(zImg - zCtr) <= g_edgeZ);
+        bool expectOK = (abs(zImg - zExp) <= g_ssgiDepthReject);
+
+        if (!(nearEdgeOK && expectOK))
+        {
+            continue;
+        }
+
+        float cosineWeight = saturate(dot(normalV, dirV));
+        float distAtten = 1.0f / (1.0f + (radius * radius));
+        float weight = cosineWeight * distAtten;
+
+        float3 sampleColor = tex2D(sampColor, suv).rgb;
+
+        accumColor += sampleColor * weight;
+        accumWeight += weight;
+    }
+
+    float3 indirect = (accumWeight > 1e-6f) ? (accumColor / accumWeight) : 0.0f;
+    return indirect;
+}
+
+// --- PassA: SSGI の“間接光のみ”を作成して RT へ出力 ---
+float4 PS_SSGI_Create(VS_OUT i) : COLOR0
+{
+    float3 indirect = ComputeSSGIIndirect(i.uv);
+    return float4(indirect, 1.0f);
+}
+
+technique TechniqueSSGI_Create
+{
+    pass P0
+    {
+        CullMode = NONE;
+        VertexShader = compile vs_3_0 VS_Fullscreen();
+        PixelShader = compile ps_3_0 PS_SSGI_Create();
+    }
+}
+
+// --- カラー対応の深度ガイド・ブラー（横/縦） ---
+float4 PS_BlurH_Color(VS_OUT i) : COLOR0
+{
+    const int R = 50;
+    float centerZ = tex2D(sampZ, i.uv).a;
+    float3 centerRGB = tex2D(sampAO, i.uv).rgb;
+
+    float2 stepUV = float2(g_invSize.x, 0.0f);
+
+    float3 sumRGB = centerRGB;
+    float sumW = 1.0f;
+
+    [unroll]
+    for (int k = 1; k <= R; ++k)
+    {
+        float w = GaussianW(k, g_sigmaPx);
+
+        float2 uvL = i.uv - stepUV * k;
+        float2 uvR = i.uv + stepUV * k;
+
+        float zL = tex2D(sampZ, uvL).a;
+        float zR = tex2D(sampZ, uvR).a;
+
+        if (abs(zL - centerZ) <= g_depthReject)
+        {
+            float3 cL = tex2D(sampAO, uvL).rgb;
+            sumRGB += cL * w;
+            sumW += w;
+        }
+        if (abs(zR - centerZ) <= g_depthReject)
+        {
+            float3 cR = tex2D(sampAO, uvR).rgb;
+            sumRGB += cR * w;
+            sumW += w;
+        }
+    }
+    float3 rgb = sumRGB / max(sumW, 1e-6);
+    return float4(rgb, 1.0f);
+}
+
+float4 PS_BlurV_Color(VS_OUT i) : COLOR0
+{
+    const int R = 50;
+    float centerZ = tex2D(sampZ, i.uv).a;
+    float3 centerRGB = tex2D(sampAO, i.uv).rgb;
+
+    float2 stepUV = float2(0.0f, g_invSize.y);
+
+    float3 sumRGB = centerRGB;
+    float sumW = 1.0f;
+
+    [unroll]
+    for (int k = 1; k <= R; ++k)
+    {
+        float w = GaussianW(k, g_sigmaPx);
+
+        float2 uvD = i.uv + stepUV * k;
+        float2 uvU = i.uv - stepUV * k;
+
+        float zD = tex2D(sampZ, uvD).a;
+        float zU = tex2D(sampZ, uvU).a;
+
+        if (abs(zD - centerZ) <= g_depthReject)
+        {
+            float3 cD = tex2D(sampAO, uvD).rgb;
+            sumRGB += cD * w;
+            sumW += w;
+        }
+        if (abs(zU - centerZ) <= g_depthReject)
+        {
+            float3 cU = tex2D(sampAO, uvU).rgb;
+            sumRGB += cU * w;
+            sumW += w;
+        }
+    }
+    float3 rgb = sumRGB / max(sumW, 1e-6);
+    return float4(rgb, 1.0f);
+}
+
+technique TechniqueSSGI_BlurH
+{
+    pass P0
+    {
+        CullMode = NONE;
+        VertexShader = compile vs_3_0 VS_Fullscreen();
+        PixelShader = compile ps_3_0 PS_BlurH_Color();
+    }
+}
+technique TechniqueSSGI_BlurV
+{
+    pass P0
+    {
+        CullMode = NONE;
+        VertexShader = compile vs_3_0 VS_Fullscreen();
+        PixelShader = compile ps_3_0 PS_BlurV_Color();
+    }
+}
+
+// --- PassD: 合成（元色 + ぼかした間接光 × 強さ） ---
+float4 PS_SSGI_Composite(VS_OUT i) : COLOR0
+{
+    float3 base = tex2D(sampColor, i.uv).rgb;
+    float3 gi = tex2D(sampAO, i.uv).rgb; // ← ブラー済み SSGI を texAO 経由で
+    float3 outC = base + gi * g_ssgiStrength;
+    return float4(saturate(outC), 1.0f);
+}
+technique TechniqueSSGI_Composite
+{
+    pass P0
+    {
+        CullMode = NONE;
+        VertexShader = compile vs_3_0 VS_Fullscreen();
+        PixelShader = compile ps_3_0 PS_SSGI_Composite();
     }
 }
 

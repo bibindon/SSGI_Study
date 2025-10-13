@@ -293,7 +293,7 @@ void RenderPass1()
 
     // 球体描画（上に配置）
     static float t2 = 0.0f;
-    t2 += 0.02f;
+    t2 = 3.14f * 1.5;
     D3DXMatrixTranslation(&W, 0.0f, 2.0f + sinf(t2) * 1, 0.0f);
     g_pEffect1->SetMatrix("g_matWorld", &W);
     for (DWORD i = 0; i < g_dwNumMaterials; ++i) {
@@ -338,36 +338,35 @@ void RenderPass1()
 
 void RenderPass2()
 {
-    // 共通
     g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
     D3DXVECTOR2 invSize(1.0f / kBackW, 1.0f / kBackH);
 
-    // --- Pass A: AO作成 → g_pAoTex ---
-    LPDIRECT3DSURFACE9 pAo = NULL;
-    g_pAoTex->GetSurfaceLevel(0, &pAo);
-    g_pd3dDevice->SetRenderTarget(0, pAo);
+    // --- Pass A: SSGI 作成 → g_pAoTex ---
+    LPDIRECT3DSURFACE9 pSSGI = NULL;
+    g_pAoTex->GetSurfaceLevel(0, &pSSGI);
+    g_pd3dDevice->SetRenderTarget(0, pSSGI);
     g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
     g_pd3dDevice->BeginScene();
 
-    g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);   // ★ 追加
-
-    g_pEffect2->SetTechnique("TechniqueAO_Create");
+    g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);
     g_pEffect2->SetMatrix("g_matView", &g_lastView);
     g_pEffect2->SetMatrix("g_matProj", &g_lastProj);
     g_pEffect2->SetFloat("g_fNear", 1.0f);
     g_pEffect2->SetFloat("g_fFar", 1000.0f);
     g_pEffect2->SetFloat("g_posRange", g_posRange);
+
+    // SSGI 作成に必要なパラメータ
+    g_pEffect2->SetFloat("g_aoStepWorld", 4.0f);
+    g_pEffect2->SetFloat("g_originPush", 0.05f);
+    g_pEffect2->SetFloat("g_edgeZ", 0.006f);
+    g_pEffect2->SetFloat("g_ssgiDepthReject", 0.003f);
+    g_pEffect2->SetFloat("g_ssgiRadiusScale", 1.0f);
+
     g_pEffect2->SetTexture("texColor", g_pRenderTarget);
     g_pEffect2->SetTexture("texZ", g_pRenderTarget2);
     g_pEffect2->SetTexture("texPos", g_pRenderTarget3);
 
-    g_pEffect2->SetFloat("g_aoStepWorld", 4.0f);   // 5 → 4（半径を少し縮める）
-    g_pEffect2->SetFloat("g_originPush", 0.05f);  // 0.15 → 0.05（押し出し弱め）
-    g_pEffect2->SetFloat("g_planeThickness", 0.006f); // 0.02 → 0.006（同一面厚みを薄く）
-    g_pEffect2->SetFloat("g_edgeZ", 0.006f); // 0.01 → 0.006（縁の深度許容を広げる）
-    g_pEffect2->SetFloat("g_aoStrength", 1.2f);   // 1.5 → 1.2（強すぎ抑制）
-    g_pEffect2->SetFloat("g_aoBias", 0.0002f);// 0.0001 → 0.0002（微バイアス）
-
+    g_pEffect2->SetTechnique("TechniqueSSGI_Create"); // ★ 変更
     UINT n;
     g_pEffect2->Begin(&n, 0);
     g_pEffect2->BeginPass(0);
@@ -375,74 +374,70 @@ void RenderPass2()
     g_pEffect2->EndPass();
     g_pEffect2->End();
     g_pd3dDevice->EndScene();
-    SAFE_RELEASE(pAo);
+    SAFE_RELEASE(pSSGI);
 
     if (true)
     {
-        // --- Pass B: 横ブラー → g_pAoTemp ---
-        LPDIRECT3DSURFACE9 pTemp = NULL;
-        g_pAoTemp->GetSurfaceLevel(0, &pTemp);
-        g_pd3dDevice->SetRenderTarget(0, pTemp);
-        g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
-        g_pd3dDevice->BeginScene();
+        // --- Pass B: 横ブラー（カラー） → g_pAoTemp ---
+        {
+            LPDIRECT3DSURFACE9 pTemp = NULL;
+            g_pAoTemp->GetSurfaceLevel(0, &pTemp);
+            g_pd3dDevice->SetRenderTarget(0, pTemp);
+            g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
+            g_pd3dDevice->BeginScene();
 
-        g_pEffect2->SetTechnique("TechniqueAO_BlurH");
-        g_pEffect2->SetTexture("texAO", g_pAoTex);
-        g_pEffect2->SetTexture("texZ", g_pRenderTarget2);     // ★ 追加：Z を渡す
-        g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);
-        g_pEffect2->SetFloat("g_sigmaPx", 8.0f);               // お好みで
-        g_pEffect2->SetFloat("g_depthReject", 0.0001f);          // 近いほど遮断厳しめ
+            g_pEffect2->SetTechnique("TechniqueSSGI_BlurH"); // ★ 変更
+            g_pEffect2->SetTexture("texAO", g_pAoTex);       // ← SSGI を渡す
+            g_pEffect2->SetTexture("texZ", g_pRenderTarget2);
+            g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);
+            g_pEffect2->SetFloat("g_sigmaPx", 8.0f);
+            g_pEffect2->SetFloat("g_depthReject", 0.0001f);
 
-        g_pEffect2->Begin(&n, 0);
-        g_pEffect2->BeginPass(0);
-        DrawFullscreenQuad();
-        g_pEffect2->EndPass();
-        g_pEffect2->End();
-        g_pd3dDevice->EndScene();
-        SAFE_RELEASE(pTemp);
+            g_pEffect2->Begin(&n, 0);
+            g_pEffect2->BeginPass(0);
+            DrawFullscreenQuad();
+            g_pEffect2->EndPass();
+            g_pEffect2->End();
+            g_pd3dDevice->EndScene();
+            SAFE_RELEASE(pTemp);
+        }
 
-        // --- Pass C: 縦ブラー → g_pAoTex（←出力先をBackBufferから変更） ---
-        LPDIRECT3DSURFACE9 pAo2 = NULL;
-        g_pAoTex->GetSurfaceLevel(0, &pAo2);
-        g_pd3dDevice->SetRenderTarget(0, pAo2);
-        g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
-        g_pd3dDevice->BeginScene();
+        // --- Pass C: 縦ブラー（カラー） → g_pAoTex ---
+        {
+            LPDIRECT3DSURFACE9 pOut = NULL;
+            g_pAoTex->GetSurfaceLevel(0, &pOut);
+            g_pd3dDevice->SetRenderTarget(0, pOut);
+            g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
+            g_pd3dDevice->BeginScene();
 
-        g_pEffect2->SetTechnique("TechniqueAO_BlurV");
-        g_pEffect2->SetTexture("texAO", g_pAoTemp);          // ソース：横ブラー結果
-        g_pEffect2->SetTexture("texZ", g_pRenderTarget2);   // 深度（ガイド）
-        g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);
-        g_pEffect2->SetFloat("g_sigmaPx", 8.0f);
-        g_pEffect2->SetFloat("g_depthReject", 0.0001f);
+            g_pEffect2->SetTechnique("TechniqueSSGI_BlurV"); // ★ 変更
+            g_pEffect2->SetTexture("texAO", g_pAoTemp);      // ← 横ブラー結果
+            g_pEffect2->SetTexture("texZ", g_pRenderTarget2);
+            g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);
+            g_pEffect2->SetFloat("g_sigmaPx", 8.0f);
+            g_pEffect2->SetFloat("g_depthReject", 0.0001f);
 
-        g_pEffect2->Begin(&n, 0);
-        g_pEffect2->BeginPass(0);
-        DrawFullscreenQuad();
-        g_pEffect2->EndPass();
-        g_pEffect2->End();
-        g_pd3dDevice->EndScene();
-        SAFE_RELEASE(pAo2);
+            g_pEffect2->Begin(&n, 0);
+            g_pEffect2->BeginPass(0);
+            DrawFullscreenQuad();
+            g_pEffect2->EndPass();
+            g_pEffect2->End();
+            g_pd3dDevice->EndScene();
+            SAFE_RELEASE(pOut);
+        }
     }
 
-    // --- Pass D: 合成 → BackBuffer ---
+    // --- Pass D: 合成（元色 + ぼかしSSGI × 強さ） → BackBuffer ---
     LPDIRECT3DSURFACE9 pBack = NULL;
     g_pd3dDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pBack);
     g_pd3dDevice->SetRenderTarget(0, pBack);
     g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
     g_pd3dDevice->BeginScene();
 
-    // 旧: g_pEffect2->SetTechnique("TechniqueAO_Composite");
-    g_pEffect2->SetTechnique("TechniqueSSGI");            // ★ 置き換え
-
-    g_pEffect2->SetTexture("texColor", g_pRenderTarget);  // 元色
-    g_pEffect2->SetTexture("texZ", g_pRenderTarget2); // Z(A=linearZ)
-    g_pEffect2->SetTexture("texPos", g_pRenderTarget3); // WorldPos
-    g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);
-
-    // お好みでチューニング用パラメータ
-    g_pEffect2->SetFloat("g_ssgiStrength", 0.5f);   // 0.0〜2.0 推奨0.3〜0.8
-    g_pEffect2->SetFloat("g_ssgiDepthReject", 0.003f); // Z差ガード
-    g_pEffect2->SetFloat("g_ssgiRadiusScale", 1.0f);   // 半径倍率（= g_aoStepWorld に乗算）
+    g_pEffect2->SetTechnique("TechniqueSSGI_Composite"); // ★ 変更
+    g_pEffect2->SetTexture("texColor", g_pRenderTarget); // 元色
+    g_pEffect2->SetTexture("texAO", g_pAoTex);        // ぼかし済み SSGI
+    g_pEffect2->SetFloat("g_ssgiStrength", 0.7f);
 
     g_pEffect2->Begin(&n, 0);
     g_pEffect2->BeginPass(0);
@@ -452,7 +447,6 @@ void RenderPass2()
 
     g_pd3dDevice->EndScene();
     SAFE_RELEASE(pBack);
-
 
     g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, TRUE);
 }

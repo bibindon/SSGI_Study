@@ -31,7 +31,8 @@ void VertexShader1(
     outPosition = mul(mul(worldPos, g_matView), g_matProj);
 
     // 簡単なライティング
-    float lightIntensity = dot(inNormal, float4(-0.3, 1.0, -0.5, 0));
+    float lightIntensity = dot(inNormal, float4(-0.f, 1.0, -0.5, 0));
+    lightIntensity *= 0.9;
 //    float lightIntensity = 1.0f;
     outDiffuse.rgb = max(0, lightIntensity) + 0.3;
     outDiffuse.a = 1.0f;
