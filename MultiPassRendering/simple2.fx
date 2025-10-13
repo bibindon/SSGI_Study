@@ -409,3 +409,99 @@ technique TechniqueAO_BlurV
         PixelShader = compile ps_3_0 PS_BlurV();
     }
 }
+// ======== SSGI params ========
+float g_ssgiStrength = 0.5f; // 出力への寄与
+float g_ssgiDepthReject = 0.003f; // Z差が大きすぎるサンプルを捨てる
+float g_ssgiRadiusScale = 1.0f; // 半径倍率（g_aoStepWorld × これ）
+
+// 近傍の色を半球サンプルで集計して “間接光” を見立てる
+float4 PS_SSGI(VS_OUT i) : COLOR0
+{
+    // 中心の元色
+    float3 baseColor = tex2D(sampColor, i.uv).rgb;
+
+    // 基準（法線・原点・参照Z）
+    Basis basis = BuildBasis(i.uv);
+
+    float3 normalV = basis.Nv;
+    float3 originV = basis.vOrigin + normalV * (g_originPush * g_aoStepWorld);
+    float refZ = basis.zRef;
+
+    // TBN を構築（半球をローカル空間に）
+    float3 upV = (abs(normalV.z) < 0.999f) ? float3(0, 0, 1) : float3(0, 1, 0);
+    float3 tangentV = normalize(cross(upV, normalV));
+    float3 bitangentV = cross(normalV, tangentV);
+
+    // 集計
+    float3 accumColor = 0.0f;
+    float accumWeight = 0.0f;
+
+    const int kSamplesSSGI = 64; // SM3.0 安全圏。必要なら 96〜128 に増やす
+
+    [unroll]
+    for (int sampleIndex = 0; sampleIndex < kSamplesSSGI; ++sampleIndex)
+    {
+        // 低相関半球方向
+        float3 hemi = HemiDirFromIndex(sampleIndex);
+        float3 dirV = normalize(tangentV * hemi.x + bitangentV * hemi.y + normalV * hemi.z);
+
+        // 半径は二乗分布（近距離寄り密度）
+        float u = ((float) sampleIndex + 0.5f) / (float) kSamplesSSGI;
+        float radius = g_aoStepWorld * g_ssgiRadiusScale * (u * u);
+
+        float3 sampleV = originV + dirV * radius;
+
+        // 画面投影
+        float4 clip = mul(float4(sampleV, 1.0f), g_matProj);
+        if (clip.w <= 0.0f)
+        {
+            continue;
+        }
+        float2 suv = NdcToUv(clip);
+        if (suv.x < 0.0f || suv.x > 1.0f || suv.y < 0.0f || suv.y > 1.0f)
+        {
+            continue;
+        }
+
+        // Z ガード：縁の遠側 or 中心Z に近いならOK
+        float zImg = tex2D(sampZ, suv).a; // 画像の線形Z
+        float zCtr = tex2D(sampZ, i.uv).a; // 中心の線形Z
+        float zExp = saturate((sampleV.z - g_fNear) / (g_fFar - g_fNear)); // 期待Z
+
+        bool nearEdgeOK = (abs(zImg - refZ) <= g_edgeZ) || (abs(zImg - zCtr) <= g_edgeZ);
+        bool expectOK = (abs(zImg - zExp) <= g_ssgiDepthReject);
+
+        if (!(nearEdgeOK && expectOK))
+        {
+            continue; // 別面/別物体への飛び越えを排除
+        }
+
+        // 重み：面に沿った方向ほど強く、距離で減衰
+        float cosineWeight = saturate(dot(normalV, dirV));
+        float distAtten = 1.0f / (1.0f + (radius * radius));
+        float weight = cosineWeight * distAtten;
+
+        // 色サンプル
+        float3 sampleColor = tex2D(sampColor, suv).rgb;
+
+        accumColor += sampleColor * weight;
+        accumWeight += weight;
+    }
+
+    float3 indirect = (accumWeight > 1e-6f) ? (accumColor / accumWeight) : 0.0f;
+
+    // 出力：元色 + 簡易間接光（お好みで AO を掛けても良い）
+    float3 outColor = baseColor + indirect * g_ssgiStrength;
+    return float4(saturate(outColor), 1.0f);
+}
+
+technique TechniqueSSGI
+{
+    pass P0
+    {
+        CullMode = NONE;
+        VertexShader = compile vs_3_0 VS_Fullscreen();
+        PixelShader = compile ps_3_0 PS_SSGI();
+    }
+}
+

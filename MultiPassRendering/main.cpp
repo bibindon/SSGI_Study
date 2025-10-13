@@ -357,6 +357,7 @@ void RenderPass2()
     g_pEffect2->SetFloat("g_fNear", 1.0f);
     g_pEffect2->SetFloat("g_fFar", 1000.0f);
     g_pEffect2->SetFloat("g_posRange", g_posRange);
+    g_pEffect2->SetTexture("texColor", g_pRenderTarget);
     g_pEffect2->SetTexture("texZ", g_pRenderTarget2);
     g_pEffect2->SetTexture("texPos", g_pRenderTarget3);
 
@@ -423,20 +424,25 @@ void RenderPass2()
         SAFE_RELEASE(pAo2);
     }
 
-    // --- Pass D: 合成（Color × AO） → BackBuffer ---
+    // --- Pass D: 合成 → BackBuffer ---
     LPDIRECT3DSURFACE9 pBack = NULL;
     g_pd3dDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pBack);
     g_pd3dDevice->SetRenderTarget(0, pBack);
     g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1.0f, 0);
     g_pd3dDevice->BeginScene();
 
-    g_pEffect2->SetTechnique("TechniqueAO_Composite");
-//    g_pEffect2->SetTechnique("TechniqueAO_CompositeMin");
+    // 旧: g_pEffect2->SetTechnique("TechniqueAO_Composite");
+    g_pEffect2->SetTechnique("TechniqueSSGI");            // ★ 置き換え
 
-    g_pEffect2->SetTexture("texColor", g_pRenderTarget);
-    g_pEffect2->SetTexture("texAO", g_pAoTex);
-
+    g_pEffect2->SetTexture("texColor", g_pRenderTarget);  // 元色
+    g_pEffect2->SetTexture("texZ", g_pRenderTarget2); // Z(A=linearZ)
+    g_pEffect2->SetTexture("texPos", g_pRenderTarget3); // WorldPos
     g_pEffect2->SetFloatArray("g_invSize", (FLOAT*)&invSize, 2);
+
+    // お好みでチューニング用パラメータ
+    g_pEffect2->SetFloat("g_ssgiStrength", 0.5f);   // 0.0〜2.0 推奨0.3〜0.8
+    g_pEffect2->SetFloat("g_ssgiDepthReject", 0.003f); // Z差ガード
+    g_pEffect2->SetFloat("g_ssgiRadiusScale", 1.0f);   // 半径倍率（= g_aoStepWorld に乗算）
 
     g_pEffect2->Begin(&n, 0);
     g_pEffect2->BeginPass(0);
@@ -446,6 +452,7 @@ void RenderPass2()
 
     g_pd3dDevice->EndScene();
     SAFE_RELEASE(pBack);
+
 
     g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, TRUE);
 }
