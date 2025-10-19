@@ -60,12 +60,12 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
     wc.style = CS_CLASSDC;
     wc.lpfnWndProc = MsgProc;
     wc.hInstance = hInstance;
-    wc.lpszClassName = _T("SSAODemo");
+    wc.lpszClassName = _T("SSGIDemo");
     RegisterClassEx(&wc);
 
     RECT rc = { 0,0,kBackW,kBackH };
     AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
-    HWND hWnd = CreateWindow(_T("SSAODemo"), _T("SSAO Demo"),
+    HWND hWnd = CreateWindow(_T("SSGIDemo"), _T("SSGI Demo"),
                              WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                              rc.right - rc.left, rc.bottom - rc.top,
                              NULL, NULL, hInstance, NULL);
@@ -89,7 +89,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
     }
 
     Cleanup();
-    UnregisterClass(_T("SSAODemo"), hInstance);
+    UnregisterClass(_T("SSGIDemo"), hInstance);
     return 0;
 }
 
